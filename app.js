@@ -3,7 +3,7 @@ const $=s=>document.querySelector(s);
 const KEY='reds-scheduler-v1'; const FBKEY='reds-scheduler-firebase'; let fbConfig=JSON.parse(localStorage.getItem(FBKEY)||'null'), fbBusy=false;
 const milestoneRx=/demo live|demo should be polished|steam capsule|sprint review|completion buffer/i;
 function estimate(t){if(t.estimate)return +t.estimate;if(/sprint review/i.test(t.title))return 2;if(/demo live|capsule/i.test(t.title))return 4;if(t.parentId)return 3;return t.priority===5?6:t.priority===3?4:2}
-let tasks=JSON.parse(localStorage.getItem(KEY)||'null')||SEED.map(t=>({...t,estimate:estimate(t),assumed:true,hard:milestoneRx.test(t.title)}));
+let tasks=JSON.parse(localStorage.getItem(KEY)||'null')||SEED.map(t=>({...t,estimate:estimate(t),assumed:true,hard:milestoneRx.test(t.title)})); let pendingTasks=null;
 function save(){localStorage.setItem(KEY,JSON.stringify(tasks)); if(fbConfig?.url) firebaseWrite().catch(()=>{})}
 function fbEndpoint(){const base=fbConfig.url.replace(/\/+$/,'');const path=(fbConfig.path||'projects/reds-scheduler').split('/').filter(Boolean).map(encodeURIComponent).join('/');return base+'/'+path+'.json'+(fbConfig.token?'?auth='+encodeURIComponent(fbConfig.token):'')}
 function syncBadge(text,error=false){const b=$('#syncBadge');if(!b)return;b.textContent=text;b.className='pill '+(error?'danger':'');$('#disconnectFirebase').hidden=!fbConfig}
@@ -15,6 +15,8 @@ function iso(d){return d.toISOString().slice(0,10)}
 function nextDay(s){let d=new Date(s+'T12:00:00');d.setDate(d.getDate()+1);return iso(d)}
 function priorityName(p){return p===5?'P0':p===3?'P1':'P2'}
 function rebalance(){
+ pendingTasks=tasks.map(t=>({...t}));
+ const originalTasks=tasks; tasks=pendingTasks;
  const cap=capacity(), scheduled=tasks.filter(t=>t.date), backlog=tasks.filter(t=>!t.date), by={};
  scheduled.sort((a,b)=>a.date.localeCompare(b.date)||b.priority-a.priority).forEach(t=>(by[t.date]??=[]).push(t));
  const decisions=[];
@@ -39,21 +41,21 @@ function rebalance(){
    }
    if(load>cap) decisions.push({bad:true,title:'Overload remains on '+date,msg:'Critical/hard work exceeds protected capacity. Split, combine, or reduce scope.'});
  });
- save(); render(decisions);
+ tasks=originalTasks; $('#previewBar').hidden=false; render(decisions,pendingTasks);
 }
-function render(decisions=[]){
- const cap=capacity(), scheduled=tasks.filter(t=>t.date).sort((a,b)=>a.date.localeCompare(b.date)||b.priority-a.priority), by={};
+function render(decisions=[],viewTasks=tasks){
+ const cap=capacity(), scheduled=viewTasks.filter(t=>t.date).sort((a,b)=>a.date.localeCompare(b.date)||b.priority-a.priority), by={};
  scheduled.forEach(t=>(by[t.date]??=[]).push(t));
- const total=tasks.reduce((s,t)=>s+estimate(t),0), assumed=tasks.filter(t=>t.assumed).length;
+ const total=viewTasks.reduce((s,t)=>s+estimate(t),0), assumed=viewTasks.filter(t=>t.assumed).length;
  const overloaded=Object.values(by).filter(a=>a.reduce((s,t)=>s+estimate(t),0)>cap).length;
  $('#stats').innerHTML=`<div class="stat"><b>${tasks.length}</b><span>open tasks imported</span></div><div class="stat"><b>${total.toFixed(0)}h</b><span>estimated workload</span></div><div class="stat"><b>${cap.toFixed(1)}h</b><span>usable hours / day</span></div><div class="stat"><b>${overloaded}</b><span>overloaded days</span></div>`;
  $('#status').textContent=assumed?` · ${assumed} estimates need calibration`:' · estimates calibrated';
  $('#timeline').innerHTML=Object.keys(by).slice(0,45).map(d=>{const a=by[d],load=a.reduce((s,t)=>s+estimate(t),0);return `<div class="day"><div class="dayhead"><b>${d}</b><span class="load ${load>cap?'bad':''}">${load.toFixed(1)}h / ${cap.toFixed(1)}h protected</span></div>${a.map(t=>`<div class="task p${t.priority}"><span class="dot"></span><div><b>${esc(t.title)}</b><br><small>${priorityName(t.priority)} · ${estimate(t)}h${t.assumed?' estimated':''}${t.hard?' · hard':''}</small></div><span class="pill">${t.column||'roadmap'}</span></div>`).join('')}</div>`}).join('');
- $('#decisions').innerHTML=decisions.length?decisions.map(d=>`<div class="decision"><b class="${d.bad?'danger':'good'}">${esc(d.title)}</b><span class="muted">${esc(d.msg)}</span></div>`).join(''):'<p class="muted">Hit Rebalance to simulate protected-capacity scheduling.</p>';
- $('#backlog').innerHTML=tasks.filter(t=>!t.date).map(t=>`<div class="backlog"><b>${esc(t.title)}</b> · ${priorityName(t.priority)} · ${estimate(t)}h</div>`).join('')||'<p class="muted">Nothing backlogged.</p>';
+ $('#decisions').innerHTML=decisions.length?decisions.map(d=>`<div class="decision"><b class="${d.bad?'danger':'good'}">${esc(d.title)}</b><span class="muted">${esc(d.msg)}</span></div>`).join(''):'<p class="muted">Preview schedule to simulate protected-capacity scheduling. Changes are only applied after confirmation.</p>';
+ $('#backlog').innerHTML=viewTasks.filter(t=>!t.date).map(t=>`<div class="backlog"><b>${esc(t.title)}</b> · ${priorityName(t.priority)} · ${estimate(t)}h</div>`).join('')||'<p class="muted">Nothing backlogged.</p>';
 }
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-$('#rebalance').addEventListener('click',rebalance);$('#hours').addEventListener('change',()=>render());$('#buffer').addEventListener('change',()=>render());
+$('#rebalance').addEventListener('click',rebalance);$('#confirmPreview').addEventListener('click',()=>{if(!pendingTasks)return;tasks=pendingTasks;pendingTasks=null;$('#previewBar').hidden=true;save();render([{title:'Schedule confirmed',msg:'The previewed schedule is now saved and synced.'}])});$('#cancelPreview').addEventListener('click',()=>{pendingTasks=null;$('#previewBar').hidden=true;render()});$('#hours').addEventListener('change',()=>render());$('#buffer').addEventListener('change',()=>render());
 $('#addBtn').addEventListener('click',()=>$('#taskDialog').showModal());$('#cancel').addEventListener('click',()=>$('#taskDialog').close());
 $('#taskForm').addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.currentTarget),date=f.get('date');tasks.push({id:'local-'+Date.now(),title:f.get('title'),estimate:+f.get('estimate'),priority:+f.get('priority'),date,hard:f.get('hard')==='on',depends:f.get('depends'),assumed:false,column:'New'});save();$('#taskDialog').close();e.currentTarget.reset();rebalance()});
 render();
