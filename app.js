@@ -25,7 +25,7 @@ function renderSlots(by){
  const daily=Math.max(1,+$('#hours').value),bufPct=Math.max(0,Math.min(60,+$('#buffer').value)),dates=Object.keys(by).slice(0,30),parts=$('#startTime').value.split(':').map(Number),startMin=parts[0]*60+parts[1],endMin=startMin+daily*60;
  const ticks=[]; for(let h=0;h<=daily;h++){ticks.push('<span style="left:'+(h/daily*100)+'%">'+timeLabel(startMin+h*60)+'</span>')} $('#timeAxis').innerHTML='<div></div><div class="axis-track">'+ticks.join('')+'</div>';
  const palette=['c1','c2','c3','c4','c5','c6','c7','c8'];
- $('#slotSchedule').innerHTML=dates.map(d=>{let used=0;const blocks=by[d].map((t,i)=>{const hrs=estimate(t),pct=hrs/daily*100,left=used/daily*100,s=timeLabel(startMin+used*60),e=timeLabel(startMin+(used+hrs)*60);used+=hrs;return '<div class="slot-block '+palette[i%palette.length]+' priority-'+t.priority+'" style="left:'+left+'%;width:'+pct+'%" title="'+esc(t.title)+' · '+s+' → '+e+'"><b>'+esc(t.title)+'</b><span>'+s+' → '+e+'</span><small>'+hrs+'h · '+priorityName(t.priority)+'</small></div>'}).join('');const free=Math.max(0,daily-used),freeBlock=free?'<div class="free-slot" style="left:'+(used/daily*100)+'%;width:'+(free/daily*100)+'%"><span>FREE '+free.toFixed(1)+'h</span></div>':'';return '<div class="slot-row"><div class="slot-date"><b>'+d.slice(5)+'</b><small>'+used.toFixed(1)+' / '+daily+'h</small></div><div class="slot-track">'+blocks+freeBlock+'<div class="buffer-zone" style="left:'+(100-bufPct)+'%;width:'+bufPct+'%"><span>BUFFER</span></div>'+(used>daily?'<span class="overrun">OVER '+(used-daily).toFixed(1)+'h</span>':'')+'</div></div>'}).join('')||'<p class="muted">No scheduled slots.</p>';
+ $('#slotSchedule').innerHTML=dates.map(d=>{let used=0;const blocks=by[d].map((t,i)=>{const hrs=t._part?+t.estimate:estimate(t),pct=hrs/daily*100,left=used/daily*100,s=timeLabel(startMin+used*60),e=timeLabel(startMin+(used+hrs)*60);used+=hrs;return '<div class="slot-block '+palette[i%palette.length]+' priority-'+t.priority+'" style="left:'+left+'%;width:'+pct+'%" title="'+esc(t.title)+' · '+s+' → '+e+'"><b>'+esc(t.title)+'</b><span>'+s+' → '+e+'</span><small>'+hrs+'h · '+priorityName(t.priority)+'</small></div>'}).join('');const free=Math.max(0,daily-used),freeBlock=free?'<div class="free-slot" style="left:'+(used/daily*100)+'%;width:'+(free/daily*100)+'%"><span>FREE '+free.toFixed(1)+'h</span></div>':'';return '<div class="slot-row"><div class="slot-date"><b>'+d.slice(5)+'</b><small>'+used.toFixed(1)+' / '+daily+'h</small></div><div class="slot-track">'+blocks+freeBlock+'<div class="buffer-zone" style="left:'+(100-bufPct)+'%;width:'+bufPct+'%"><span>BUFFER</span></div>'+(used>daily?'<span class="overrun">OVER '+(used-daily).toFixed(1)+'h</span>':'')+'</div></div>'}).join('')||'<p class="muted">No scheduled slots.</p>';
 }
 function rebalance(){
  pendingTasks=tasks.map(t=>({...t,splittable:t.splittable===true}));
@@ -59,7 +59,10 @@ function rebalance(){
 }
 function render(decisions=[],viewTasks=tasks){
  const cap=capacity(), scheduled=viewTasks.filter(t=>t.date).sort((a,b)=>a.date.localeCompare(b.date)||b.priority-a.priority), by={};
- scheduled.forEach(t=>(by[t.date]??=[]).push(t));
+ scheduled.forEach(t=>{
+  if(t.scheduleParts?.length){t.scheduleParts.forEach((p,i)=>(by[p.date]??=[]).push({...t,estimate:p.hours,_part:true,_partIndex:i}))}
+  else (by[t.date]??=[]).push(t)
+ });
  const total=viewTasks.reduce((s,t)=>s+estimate(t),0), assumed=viewTasks.filter(t=>t.assumed).length;
  const overloaded=Object.values(by).filter(a=>a.reduce((s,t)=>s+estimate(t),0)>cap).length;
  $('#stats').innerHTML=`<div class="stat"><b>${tasks.length}</b><span>open tasks imported</span></div><div class="stat"><b>${total.toFixed(0)}h</b><span>estimated workload</span></div><div class="stat"><b>${cap.toFixed(1)}h</b><span>usable hours / day</span></div><div class="stat"><b>${overloaded}</b><span>overloaded days</span></div>`;
