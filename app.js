@@ -28,33 +28,34 @@ function renderSlots(by){
  $('#slotSchedule').innerHTML=dates.map(d=>{let used=0;const blocks=by[d].map((t,i)=>{const hrs=estimate(t),pct=hrs/daily*100,left=used/daily*100,s=timeLabel(startMin+used*60),e=timeLabel(startMin+(used+hrs)*60);used+=hrs;return '<div class="slot-block '+palette[i%palette.length]+' priority-'+t.priority+'" style="left:'+left+'%;width:'+pct+'%" title="'+esc(t.title)+' · '+s+' → '+e+'"><b>'+esc(t.title)+'</b><span>'+s+' → '+e+'</span><small>'+hrs+'h · '+priorityName(t.priority)+'</small></div>'}).join('');const free=Math.max(0,daily-used),freeBlock=free?'<div class="free-slot" style="left:'+(used/daily*100)+'%;width:'+(free/daily*100)+'%"><span>FREE '+free.toFixed(1)+'h</span></div>':'';return '<div class="slot-row"><div class="slot-date"><b>'+d.slice(5)+'</b><small>'+used.toFixed(1)+' / '+daily+'h</small></div><div class="slot-track">'+blocks+freeBlock+'<div class="buffer-zone" style="left:'+(100-bufPct)+'%;width:'+bufPct+'%"><span>BUFFER</span></div>'+(used>daily?'<span class="overrun">OVER '+(used-daily).toFixed(1)+'h</span>':'')+'</div></div>'}).join('')||'<p class="muted">No scheduled slots.</p>';
 }
 function rebalance(){
- pendingTasks=tasks.map(t=>({...t}));
- const originalTasks=tasks; tasks=pendingTasks;
- const cap=capacity(), scheduled=tasks.filter(t=>t.date), backlog=tasks.filter(t=>!t.date), by={};
- scheduled.sort((a,b)=>a.date.localeCompare(b.date)||b.priority-a.priority).forEach(t=>(by[t.date]??=[]).push(t));
- const decisions=[];
- Object.keys(by).sort().forEach(date=>{
-   let list=by[date], load=list.reduce((s,t)=>s+estimate(t),0);
-   if(load<=cap)return;
-   const movable=list.filter(t=>!t.hard).sort((a,b)=>a.priority-b.priority||estimate(b)-estimate(a));
-   while(load>cap&&movable.length){
-     const t=movable.shift(); let target=nextDay(date), guard=0;
-     while(guard++<120){
-       const targetLoad=tasks.filter(x=>x!==t&&x.date===target).reduce((s,x)=>s+estimate(x),0);
-       const hardBefore=tasks.filter(x=>x.hard&&x.date&&x.date>=date).map(x=>x.date).sort()[0];
-       if(targetLoad+estimate(t)<=cap && (!hardBefore||target<=hardBefore)){break}
-       target=nextDay(target);
-     }
-     if(guard>=120|| (t.priority===1&&new Date(target)-new Date(date)>14*864e5)){
-       t.date=''; decisions.push({bad:true,title:'Backlogged '+t.title,msg:'Low-value work could not fit without eating protected capacity.'});
-     }else{
-       const old=date;t.date=target;decisions.push({title:'Moved '+t.title,msg:old+' → '+target+' to preserve '+Math.round(+$('#buffer').value)+'% buffer.'});
-     }
-     load-=estimate(t);
-   }
-   if(load>cap) decisions.push({bad:true,title:'Overload remains on '+date,msg:'Critical/hard work exceeds protected capacity. Split, combine, or reduce scope.'});
+ pendingTasks=tasks.map(t=>({...t,splittable:t.splittable===true}));
+ const cap=capacity(), today=iso(new Date()), decisions=[];
+ const hard=pendingTasks.filter(t=>t.hard&&t.date).sort((a,b)=>a.date.localeCompare(b.date));
+ const work=pendingTasks.filter(t=>!t.hard).sort((a,b)=>{
+   const ad=a.date||'9999-12-31',bd=b.date||'9999-12-31';
+   return b.priority-a.priority||ad.localeCompare(bd)||String(a.title).localeCompare(String(b.title))
  });
- tasks=originalTasks; $('#previewBar').hidden=false; render(decisions,pendingTasks);
+ let cursor=today, used=0;
+ const hardLoad={}; hard.forEach(t=>hardLoad[t.date]=(hardLoad[t.date]||0)+estimate(t));
+ function advance(){cursor=nextDay(cursor);used=0}
+ function room(day){return Math.max(0,cap-(hardLoad[day]||0)-(day===cursor?used:0))}
+ work.forEach(t=>{
+   const hrs=estimate(t), original=t.date||'backlog';
+   if(t.splittable){
+     let remain=hrs,first=null,parts=[],guard=0;
+     while(remain>0&&guard++<365){let avail=room(cursor);if(avail<=0){advance();continue}const take=Math.min(avail,remain);first=first||cursor;parts.push({date:cursor,hours:take});used+=take;remain-=take;if(remain>0)advance()}
+     t.date=first||'';t.scheduleParts=parts;
+     decisions.push({title:'Scheduled '+t.title,msg:original+' → '+parts.map(p=>p.date+' ('+p.hours.toFixed(1)+'h)').join(', ')+' · splitting allowed.'});
+   }else{
+     t.scheduleParts=null;let guard=0;
+     while(room(cursor)<hrs&&guard++<365)advance();
+     if(guard>=365){t.date='';decisions.push({bad:true,title:'Backlogged '+t.title,msg:'No contiguous '+hrs+'h protected slot was found.'});return}
+     t.date=cursor;used+=hrs;
+     decisions.push({title:'Scheduled '+t.title,msg:original+' → '+cursor+' · contiguous '+hrs+'h block.'});
+   }
+ });
+ hard.forEach(t=>{t.scheduleParts=null});
+ $('#previewBar').hidden=false;render(decisions,pendingTasks);
 }
 function render(decisions=[],viewTasks=tasks){
  const cap=capacity(), scheduled=viewTasks.filter(t=>t.date).sort((a,b)=>a.date.localeCompare(b.date)||b.priority-a.priority), by={};
@@ -71,7 +72,7 @@ function render(decisions=[],viewTasks=tasks){
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 $('#rebalance').addEventListener('click',rebalance);$('#confirmPreview').addEventListener('click',()=>{if(!pendingTasks)return;tasks=pendingTasks;pendingTasks=null;$('#previewBar').hidden=true;save();render([{title:'Schedule confirmed',msg:'The previewed schedule is now saved and synced.'}])});$('#cancelPreview').addEventListener('click',()=>{pendingTasks=null;$('#previewBar').hidden=true;render()});$('#hours').addEventListener('change',()=>render());$('#buffer').addEventListener('change',()=>render());$('#startTime').addEventListener('change',()=>{save();render()});
 $('#addBtn').addEventListener('click',()=>$('#taskDialog').showModal());$('#cancel').addEventListener('click',()=>$('#taskDialog').close());
-$('#taskForm').addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.currentTarget),date=f.get('date');tasks.push({id:'local-'+Date.now(),title:f.get('title'),estimate:+f.get('estimate'),priority:+f.get('priority'),date,hard:f.get('hard')==='on',depends:f.get('depends'),assumed:false,column:'New'});save();$('#taskDialog').close();e.currentTarget.reset();rebalance()});
+$('#taskForm').addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.currentTarget),date=f.get('date');tasks.push({id:'local-'+Date.now(),title:f.get('title'),estimate:+f.get('estimate'),priority:+f.get('priority'),date,hard:f.get('hard')==='on',splittable:f.get('splittable')==='on',depends:f.get('depends'),assumed:false,column:'New'});save();$('#taskDialog').close();e.currentTarget.reset();rebalance()});
 render();
 $('#firebaseBtn').onclick=()=>$('#firebaseDialog').showModal();$('#firebaseCancel').onclick=()=>$('#firebaseDialog').close();
 $('#firebaseForm').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.currentTarget),url=String(f.get('url')).trim().replace(/\/+$/,'');if(!/^https:\/\/[\w.-]+\.(firebaseio\.com|firebasedatabase\.app|firebasedatabase\.com)$/.test(url)){alert('Enter a valid Firebase Realtime Database URL');return}try{await firebaseConnect({url,path:String(f.get('path')).trim()||'projects/reds-scheduler',token:String(f.get('token')).trim()});$('#firebaseDialog').close()}catch{alert('Firebase sync failed. Check the database URL, rules, and token.')}}
