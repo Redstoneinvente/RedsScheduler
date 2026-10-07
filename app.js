@@ -14,6 +14,20 @@ function capacity(){return Math.max(.5,+$('#hours').value*(1-+$('#buffer').value
 function iso(d){return d.toISOString().slice(0,10)}
 function nextDay(s){let d=new Date(s+'T12:00:00');d.setDate(d.getDate()+1);return iso(d)}
 function priorityName(p){return p===5?'P0':p===3?'P1':'P2'}
+function removeTask(id){
+ const source=pendingTasks||tasks,t=source.find(x=>String(x.id)===String(id)); if(!t)return;
+ if(!confirm('Remove "'+t.title+'"?'))return;
+ if(pendingTasks){pendingTasks=pendingTasks.filter(x=>String(x.id)!==String(id));render([{title:'Removed from preview',msg:t.title+' will be removed when you confirm this schedule.'}],pendingTasks)}
+ else{tasks=tasks.filter(x=>String(x.id)!==String(id));save();render([{title:'Task removed',msg:t.title+' was removed from the schedule.'}])}
+}
+function renderSlots(by){
+ const daily=Math.max(1,+$('#hours').value),bufPct=Math.max(0,Math.min(60,+$('#buffer').value)),dates=Object.keys(by).slice(0,30);
+ $('#slotSchedule').innerHTML=dates.map(d=>{
+  let used=0;
+  const blocks=by[d].map(t=>{const hrs=estimate(t),pct=Math.min(100,hrs/daily*100),start=used/daily*100;used+=hrs;return '<div class="slot-block slot-p'+t.priority+'" style="left:'+start+'%;width:'+pct+'%" title="'+esc(t.title)+' · '+hrs+'h"><span>'+esc(t.title)+'</span><small>'+hrs+'h</small></div>'}).join('');
+  return '<div class="slot-row"><div class="slot-date"><b>'+d.slice(5)+'</b><small>'+used.toFixed(1)+' / '+daily+'h</small></div><div class="slot-track">'+blocks+'<div class="buffer-zone" style="left:'+(100-bufPct)+'%;width:'+bufPct+'%"><span>buffer</span></div>'+(used>daily?'<span class="overrun">OVER</span>':'')+'</div></div>'
+ }).join('')||'<p class="muted">No scheduled slots.</p>';
+}
 function rebalance(){
  pendingTasks=tasks.map(t=>({...t}));
  const originalTasks=tasks; tasks=pendingTasks;
@@ -50,9 +64,10 @@ function render(decisions=[],viewTasks=tasks){
  const overloaded=Object.values(by).filter(a=>a.reduce((s,t)=>s+estimate(t),0)>cap).length;
  $('#stats').innerHTML=`<div class="stat"><b>${tasks.length}</b><span>open tasks imported</span></div><div class="stat"><b>${total.toFixed(0)}h</b><span>estimated workload</span></div><div class="stat"><b>${cap.toFixed(1)}h</b><span>usable hours / day</span></div><div class="stat"><b>${overloaded}</b><span>overloaded days</span></div>`;
  $('#status').textContent=assumed?` · ${assumed} estimates need calibration`:' · estimates calibrated';
- $('#timeline').innerHTML=Object.keys(by).slice(0,45).map(d=>{const a=by[d],load=a.reduce((s,t)=>s+estimate(t),0);return `<div class="day"><div class="dayhead"><b>${d}</b><span class="load ${load>cap?'bad':''}">${load.toFixed(1)}h / ${cap.toFixed(1)}h protected</span></div>${a.map(t=>`<div class="task p${t.priority}"><span class="dot"></span><div><b>${esc(t.title)}</b><br><small>${priorityName(t.priority)} · ${estimate(t)}h${t.assumed?' estimated':''}${t.hard?' · hard':''}</small></div><span class="pill">${t.column||'roadmap'}</span></div>`).join('')}</div>`}).join('');
+ renderSlots(by);
+ $('#timeline').innerHTML=Object.keys(by).slice(0,45).map(d=>{const a=by[d],load=a.reduce((s,t)=>s+estimate(t),0);return `<div class="day"><div class="dayhead"><b>${d}</b><span class="load ${load>cap?'bad':''}">${load.toFixed(1)}h / ${cap.toFixed(1)}h protected</span></div>${a.map(t=>`<div class="task p${t.priority}"><span class="dot"></span><div><b>${esc(t.title)}</b><br><small>${priorityName(t.priority)} · ${estimate(t)}h${t.assumed?' estimated':''}${t.hard?' · hard':''}</small></div><div class="task-actions"><span class="pill">${t.column||'roadmap'}</span><button class="delete-task" data-delete="${esc(t.id)}" title="Remove task">×</button></div></div>`).join('')}</div>`}).join('');
  $('#decisions').innerHTML=decisions.length?decisions.map(d=>`<div class="decision"><b class="${d.bad?'danger':'good'}">${esc(d.title)}</b><span class="muted">${esc(d.msg)}</span></div>`).join(''):'<p class="muted">Preview schedule to simulate protected-capacity scheduling. Changes are only applied after confirmation.</p>';
- $('#backlog').innerHTML=viewTasks.filter(t=>!t.date).map(t=>`<div class="backlog"><b>${esc(t.title)}</b> · ${priorityName(t.priority)} · ${estimate(t)}h</div>`).join('')||'<p class="muted">Nothing backlogged.</p>';
+ $('#backlog').innerHTML=viewTasks.filter(t=>!t.date).map(t=>`<div class="backlog"><span><b>${esc(t.title)}</b> · ${priorityName(t.priority)} · ${estimate(t)}h</span><button class="delete-task" data-delete="${esc(t.id)}" title="Remove task">×</button></div>`).join('')||'<p class="muted">Nothing backlogged.</p>'; document.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>removeTask(b.dataset.delete)));
 }
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 $('#rebalance').addEventListener('click',rebalance);$('#confirmPreview').addEventListener('click',()=>{if(!pendingTasks)return;tasks=pendingTasks;pendingTasks=null;$('#previewBar').hidden=true;save();render([{title:'Schedule confirmed',msg:'The previewed schedule is now saved and synced.'}])});$('#cancelPreview').addEventListener('click',()=>{pendingTasks=null;$('#previewBar').hidden=true;render()});$('#hours').addEventListener('change',()=>render());$('#buffer').addEventListener('change',()=>render());
