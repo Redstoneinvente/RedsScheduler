@@ -25,42 +25,36 @@ function renderSlots(by){
  const daily=Math.max(1,+$('#hours').value),bufPct=Math.max(0,Math.min(60,+$('#buffer').value)),dates=Object.keys(by).slice(0,30),parts=$('#startTime').value.split(':').map(Number),startMin=parts[0]*60+parts[1],endMin=startMin+daily*60;
  const ticks=[]; for(let h=0;h<=daily;h++){ticks.push('<span style="left:'+(h/daily*100)+'%">'+timeLabel(startMin+h*60)+'</span>')} $('#timeAxis').innerHTML='<div></div><div class="axis-track">'+ticks.join('')+'</div>';
  const palette=['c1','c2','c3','c4','c5','c6','c7','c8'];
- $('#slotSchedule').innerHTML=dates.map(d=>{let used=0;const blocks=by[d].map((t,i)=>{const hrs=t._part?+t.estimate:estimate(t),pct=hrs/daily*100,left=used/daily*100,s=timeLabel(startMin+used*60),e=timeLabel(startMin+(used+hrs)*60);used+=hrs;return '<div class="slot-block '+palette[i%palette.length]+' priority-'+t.priority+'" style="left:'+left+'%;width:'+pct+'%" title="'+esc(t.title)+' · '+s+' → '+e+'"><b>'+esc(t.title)+'</b><span>'+s+' → '+e+'</span><small>'+hrs+'h · '+priorityName(t.priority)+'</small></div>'}).join('');const free=Math.max(0,daily-used),freeBlock=free?'<div class="free-slot" style="left:'+(used/daily*100)+'%;width:'+(free/daily*100)+'%"><span>FREE '+free.toFixed(1)+'h</span></div>':'';return '<div class="slot-row"><div class="slot-date"><b>'+d.slice(5)+'</b><small>'+used.toFixed(1)+' / '+daily+'h</small></div><div class="slot-track">'+blocks+freeBlock+'<div class="buffer-zone" style="left:'+(100-bufPct)+'%;width:'+bufPct+'%"><span>BUFFER</span></div>'+(used>daily?'<span class="overrun">OVER '+(used-daily).toFixed(1)+'h</span>':'')+'</div></div>'}).join('')||'<p class="muted">No scheduled slots.</p>';
+ $('#slotSchedule').innerHTML=dates.map(d=>{let used=0;const blocks=by[d].map((t,i)=>{const hrs=t._part?+t.estimate:estimate(t),pct=hrs/daily*100,s=t._startTime||t.startTime||timeLabel(startMin+used*60),e=t._endTime||t.endTime||timeLabel(startMin+(used+hrs)*60),sMin=(+s.slice(0,2)*60+ +s.slice(3)),left=(sMin-startMin)/(daily*60)*100;used=Math.max(used,(sMin-startMin)/60+hrs);return '<div class="slot-block '+palette[i%palette.length]+' priority-'+t.priority+'" style="left:'+left+'%;width:'+pct+'%" title="'+esc(t.title)+' · '+s+' → '+e+'"><b>'+esc(t.title)+'</b><span>'+s+' → '+e+'</span><small>'+hrs+'h · '+priorityName(t.priority)+'</small></div>'}).join('');const free=Math.max(0,daily-used),freeBlock=free?'<div class="free-slot" style="left:'+(used/daily*100)+'%;width:'+(free/daily*100)+'%"><span>FREE '+free.toFixed(1)+'h</span></div>':'';return '<div class="slot-row"><div class="slot-date"><b>'+d.slice(5)+'</b><small>'+used.toFixed(1)+' / '+daily+'h</small></div><div class="slot-track">'+blocks+freeBlock+'<div class="buffer-zone" style="left:'+(100-bufPct)+'%;width:'+bufPct+'%"><span>BUFFER</span></div>'+(used>daily?'<span class="overrun">OVER '+(used-daily).toFixed(1)+'h</span>':'')+'</div></div>'}).join('')||'<p class="muted">No scheduled slots.</p>';
 }
 function rebalance(){
- pendingTasks=tasks.map(t=>({...t,splittable:t.splittable===true}));
- const cap=capacity(), today=iso(new Date()), decisions=[];
- const hard=pendingTasks.filter(t=>t.hard&&t.date).sort((a,b)=>a.date.localeCompare(b.date));
- const work=pendingTasks.filter(t=>!t.hard).sort((a,b)=>{
-   const ad=a.date||'9999-12-31',bd=b.date||'9999-12-31';
-   return b.priority-a.priority||ad.localeCompare(bd)||String(a.title).localeCompare(String(b.title))
- });
- let cursor=today, used=0;
- const hardLoad={}; hard.forEach(t=>hardLoad[t.date]=(hardLoad[t.date]||0)+estimate(t));
- function advance(){cursor=nextDay(cursor);used=0}
- function room(day){return Math.max(0,cap-(hardLoad[day]||0)-(day===cursor?used:0))}
- work.forEach(t=>{
-   const hrs=estimate(t), original=t.date||'backlog';
-   if(t.splittable){
-     let remain=hrs,first=null,parts=[],guard=0;
-     while(remain>0&&guard++<365){let avail=room(cursor);if(avail<=0){advance();continue}const take=Math.min(avail,remain);first=first||cursor;parts.push({date:cursor,hours:take});used+=take;remain-=take;if(remain>0)advance()}
-     t.date=first||'';t.scheduleParts=parts;
-     decisions.push({title:'Scheduled '+t.title,msg:original+' → '+parts.map(p=>p.date+' ('+p.hours.toFixed(1)+'h)').join(', ')+' · splitting allowed.'});
+ pendingTasks=tasks.map(t=>({...t,splittable:t.splittable===true,scheduleParts:null,startTime:null,endTime:null}));
+ const cap=capacity(),today=iso(new Date()),decisions=[],parts=$('#startTime').value.split(':').map(Number),dayStart=parts[0]*60+parts[1];
+ const queue=pendingTasks.slice().sort((a,b)=>{const ad=a.date||'9999-12-31',bd=b.date||'9999-12-31';return ad.localeCompare(bd)||b.priority-a.priority||String(a.title).localeCompare(String(b.title))});
+ let day=today,used=0;
+ function advance(){day=nextDay(day);used=0}
+ queue.forEach(t=>{
+   const hrs=estimate(t),original=t.date||'backlog',segments=[];
+   if(t.hard&&t.date&&t.date>day){day=t.date;used=0}
+   if(!t.splittable){
+     if(hrs>cap){t.date='';decisions.push({bad:true,title:'Cannot schedule '+t.title,msg:hrs+'h exceeds the '+cap.toFixed(1)+'h protected work window. Enable splitting or reduce the estimate.'});return}
+     if(used+hrs>cap)advance();
+     const start=dayStart+used*60,end=start+hrs*60;
+     t.date=day;t.startTime=timeLabel(start);t.endTime=timeLabel(end);t.scheduleParts=[{date:day,hours:hrs,startTime:t.startTime,endTime:t.endTime}];used+=hrs;
+     decisions.push({title:'Queued '+t.title,msg:original+' → '+day+' '+t.startTime+'–'+t.endTime+'. Next work starts after this finishes.'});
    }else{
-     t.scheduleParts=null;let guard=0;
-     while(room(cursor)<hrs&&guard++<365)advance();
-     if(guard>=365){t.date='';decisions.push({bad:true,title:'Backlogged '+t.title,msg:'No contiguous '+hrs+'h protected slot was found.'});return}
-     t.date=cursor;used+=hrs;
-     decisions.push({title:'Scheduled '+t.title,msg:original+' → '+cursor+' · contiguous '+hrs+'h block.'});
+     let remain=hrs,guard=0;
+     while(remain>0&&guard++<365){if(used>=cap)advance();const take=Math.min(remain,cap-used),start=dayStart+used*60,end=start+take*60;segments.push({date:day,hours:take,startTime:timeLabel(start),endTime:timeLabel(end)});used+=take;remain-=take;if(remain>0)advance()}
+     t.scheduleParts=segments;t.date=segments[0]?.date||'';t.startTime=segments[0]?.startTime||null;t.endTime=segments.at(-1)?.endTime||null;
+     decisions.push({title:'Queued '+t.title,msg:segments.map(s=>s.date+' '+s.startTime+'–'+s.endTime).join(', ')+' · split enabled.'});
    }
  });
- hard.forEach(t=>{t.scheduleParts=null});
  $('#previewBar').hidden=false;render(decisions,pendingTasks);
 }
 function render(decisions=[],viewTasks=tasks){
  const cap=capacity(), scheduled=viewTasks.filter(t=>t.date).sort((a,b)=>a.date.localeCompare(b.date)||b.priority-a.priority), by={};
  scheduled.forEach(t=>{
-  if(t.scheduleParts?.length){t.scheduleParts.forEach((p,i)=>(by[p.date]??=[]).push({...t,estimate:p.hours,_part:true,_partIndex:i}))}
+  if(t.scheduleParts?.length){t.scheduleParts.forEach((p,i)=>(by[p.date]??=[]).push({...t,estimate:p.hours,_part:true,_partIndex:i,_startTime:p.startTime,_endTime:p.endTime}))}
   else (by[t.date]??=[]).push(t)
  });
  const total=viewTasks.reduce((s,t)=>s+estimate(t),0), assumed=viewTasks.filter(t=>t.assumed).length;
